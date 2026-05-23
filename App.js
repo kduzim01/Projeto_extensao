@@ -644,25 +644,39 @@ const OnboardingScreen = ({ onComplete, theme }) => {
 // ─────────────────────────────────────────────
 // TELA: FEED
 // ─────────────────────────────────────────────
+// Gera a ordem do feed a partir dos pesos atuais (puro snapshot)
+const buildFeedSnapshot = (weights) => {
+  const maxW = Math.max(...Object.values(weights), 1);
+  const scored = DATABASE_POSTS.map(post => {
+    const catWeight = (weights[post.category] || 0) / maxW;
+    const noise     = Math.random();
+    const catBoost  = catWeight * 0.22;
+    return { ...post, _score: noise + catBoost };
+  });
+  return scored.sort((a, b) => b._score - a._score);
+};
+
 const FeedScreen = ({
   theme, userName, userAvatar,
   categoryWeights, onLike, likedPosts,
   comments, onAddComment,
 }) => {
-  const [commentPost, setCommentPost] = useState(null);
+  const [commentPost,  setCommentPost]  = useState(null);
+  const [feedSnapshot, setFeedSnapshot] = useState(() => buildFeedSnapshot(categoryWeights));
+  const [hasNewContent, setHasNewContent] = useState(false);
+  const flatListRef = useRef(null);
 
-  // Algoritmo de feed: aleatório com prioridade leve por interesse de categoria.
-  // Posts curtidos NÃO somem — apenas são armazenados na aba Curtidas.
-  // Re-calcula quando categoryWeights mudar (novo like => novo peso de categoria).
-  const sortedPosts = useMemo(() => {
-    const maxW = Math.max(...Object.values(categoryWeights), 1);
-    const scored = DATABASE_POSTS.map(post => {
-      const catWeight = (categoryWeights[post.category] || 0) / maxW; // 0–1
-      const noise     = Math.random();         // 0–1 (dominante, garante variedade)
-      const catBoost  = catWeight * 0.22;      // 0–0.22 (inclina levemente p/ interesse)
-      return { ...post, _score: noise + catBoost };
-    });
-    return scored.sort((a, b) => b._score - a._score);
+  // Detecta que categoryWeights mudou (like/comentário) → sinaliza ao usuário
+  // que há conteúdo novo disponível, SEM re-embaralhar automaticamente
+  useEffect(() => {
+    setHasNewContent(true);
+  }, [categoryWeights]);
+
+  const handleRefresh = useCallback(() => {
+    const next = buildFeedSnapshot(categoryWeights);
+    setFeedSnapshot(next);
+    setHasNewContent(false);
+    flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
   }, [categoryWeights]);
 
   const renderItem = useCallback(({ item }) => (
@@ -679,7 +693,8 @@ const FeedScreen = ({
   return (
     <View style={[styles.flex, { backgroundColor: theme.bg }]}>
       <FlatList
-        data={sortedPosts}
+        ref={flatListRef}
+        data={feedSnapshot}
         renderItem={renderItem}
         keyExtractor={item => item.id}
         showsVerticalScrollIndicator={false}
@@ -692,10 +707,38 @@ const FeedScreen = ({
             backgroundColor: theme.surface,
             borderBottomColor: theme.border,
           }]}>
-            <Text style={[styles.feedGreeting, { color: theme.textSecondary }]}>
-              Bom dia, {userName}
-            </Text>
-            <Text style={[styles.feedTitle, { color: theme.text }]}>Seu Feed</Text>
+            <View style={styles.feedHeaderRow}>
+              <View>
+                <Text style={[styles.feedGreeting, { color: theme.textSecondary }]}>
+                  Bom dia, {userName}
+                </Text>
+                <Text style={[styles.feedTitle, { color: theme.text }]}>Seu Feed</Text>
+              </View>
+              {/* Botão de atualizar feed */}
+              <TouchableOpacity
+                onPress={handleRefresh}
+                style={[
+                  styles.refreshBtn,
+                  {
+                    backgroundColor: hasNewContent ? theme.accent : theme.surfaceAlt,
+                    borderColor: hasNewContent ? theme.accent : theme.border,
+                  },
+                ]}
+                activeOpacity={0.75}
+              >
+                <Ionicons
+                  name="refresh"
+                  size={15}
+                  color={hasNewContent ? "#FFF" : theme.textSecondary}
+                />
+                <Text style={[
+                  styles.refreshBtnText,
+                  { color: hasNewContent ? "#FFF" : theme.textSecondary },
+                ]}>
+                  {hasNewContent ? "Atualizar" : "Atualizado"}
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
         }
       />
@@ -1210,12 +1253,20 @@ export default function App() {
     });
   }, []);
 
-  // ── Adicionar comentário (persiste em state global) ──
+  // ── Adicionar comentário: persiste + atribui 3 pontos na categoria ──
   const handleAddComment = useCallback((postId, comment) => {
     setComments(prev => ({
       ...prev,
       [postId]: [...(prev[postId] || []), comment],
     }));
+    // Encontra o post para saber a categoria e adicionar peso
+    const post = DATABASE_POSTS.find(p => p.id === postId);
+    if (post) {
+      setCategoryWeights(w => ({
+        ...w,
+        [post.category]: (w[post.category] || 0) + 3,
+      }));
+    }
   }, []);
 
   // ── Logout / Reiniciar ───────────────────
@@ -1360,9 +1411,16 @@ const styles = StyleSheet.create({
   headerAction:      { padding: 4 },
 
   // ── Feed ────────────────────────────────────────────
-  feedHeader:        { padding: 20, borderBottomWidth: 1 },
+  feedHeader:        { paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1 },
+  feedHeaderRow:     { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   feedGreeting:      { fontSize: 13, marginBottom: 2 },
   feedTitle:         { fontSize: 26, fontWeight: "800", letterSpacing: -0.5 },
+  refreshBtn:        {
+    flexDirection: "row", alignItems: "center", gap: 5,
+    paddingHorizontal: 14, paddingVertical: 8,
+    borderRadius: 20, borderWidth: 1.5,
+  },
+  refreshBtnText:    { fontSize: 13, fontWeight: "700" },
 
   // ── Post Card ───────────────────────────────────────
   card:              { backgroundColor: "transparent", overflow: "hidden" },
